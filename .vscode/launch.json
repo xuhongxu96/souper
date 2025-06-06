@@ -1,0 +1,16 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Launch",
+            "program": "${workspaceFolder}/build/souper2llvm",
+            "args": [
+                "-lhs",
+                "-branch",
+                "${workspaceFolder}/.vscode/test.ir",
+            ],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

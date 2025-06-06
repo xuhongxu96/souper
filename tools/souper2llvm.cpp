@@ -25,25 +25,29 @@ using namespace souper;
 
 unsigned DebugLevel;
 
-static cl::opt<unsigned, /*ExternalStorage=*/true>
-DebugFlagParser("souper-debug-level",
-     cl::desc("Control the verbose level of debug output (default=1). "
-     "The larger the number is, the more fine-grained debug "
-     "information will be printed."),
-     cl::location(DebugLevel), cl::init(1));
+static cl::opt<unsigned, /*ExternalStorage=*/true> DebugFlagParser(
+    "souper-debug-level",
+    cl::desc("Control the verbose level of debug output (default=1). "
+             "The larger the number is, the more fine-grained debug "
+             "information will be printed."),
+    cl::location(DebugLevel), cl::init(1));
 
 static cl::opt<std::string>
     InputFilename(cl::Positional,
                   cl::desc("<input souper exression (default=stdin)>"),
                   cl::init("-"));
 
-static cl::opt<bool> LHS(
-    "lhs", cl::desc("input a replacement and convert ths LHS"),
-    cl::init(false));
+static cl::opt<bool> LHS("lhs",
+                         cl::desc("input a replacement and convert ths LHS"),
+                         cl::init(false));
 
-static cl::opt<bool> RHS(
-    "rhs", cl::desc("input a replacement and convert ths RHS"),
-    cl::init(false));
+static cl::opt<bool> RHS("rhs",
+                         cl::desc("input a replacement and convert ths RHS"),
+                         cl::init(false));
+
+static cl::opt<bool>
+    Branch("branch", cl::desc("generate a module with branches for the LHS"),
+           cl::init(false));
 
 static cl::opt<std::string> OutputFilename(
     "o", cl::desc("<output destination for textual LLVM IR (default=stdout)>"),
@@ -55,9 +59,10 @@ int Work(const MemoryBufferRef &MB) {
   std::string ErrStr;
 
   const ParsedReplacement &Rep =
-    (LHS || RHS) ? 
-    ParseReplacement(IC, MB.getBufferIdentifier(), MB.getBuffer(), ErrStr) : 
-    ParseReplacementRHS(IC, MB.getBufferIdentifier(), MB.getBuffer(), RC, ErrStr);
+      (LHS || RHS) ? ParseReplacement(IC, MB.getBufferIdentifier(),
+                                      MB.getBuffer(), ErrStr)
+                   : ParseReplacementRHS(IC, MB.getBufferIdentifier(),
+                                         MB.getBuffer(), RC, ErrStr);
 
   if (!ErrStr.empty()) {
     llvm::errs() << ErrStr << '\n';
@@ -68,8 +73,13 @@ int Work(const MemoryBufferRef &MB) {
 
   if (LHS) {
     llvm::Module Module("souper.ll", Context);
-    if (genModule(IC, Rep.Mapping.LHS, Module))
-      return 1;
+    if (Branch) {
+      if (genModuleWithBranches(IC, Rep, Module))
+        return 1;
+    } else {
+      if (genModule(IC, Rep.Mapping.LHS, Module))
+        return 1;
+    }
     std::error_code EC;
     llvm::raw_fd_ostream OS(OutputFilename, EC);
     OS << "; cost = " << cost(Rep.Mapping.LHS) << "\n\n";
@@ -87,7 +97,7 @@ int Work(const MemoryBufferRef &MB) {
     OS << Module;
     OS.flush();
   }
-  
+
   return 0;
 }
 

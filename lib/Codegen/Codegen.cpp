@@ -15,12 +15,15 @@
 #include "souper/Codegen/Codegen.h"
 #include "souper/Inst/Inst.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
 #include <map>
+#include <queue>
+#include <string>
 
 #define DEBUG_TYPE "souper"
 STATISTIC(InstructionReplaced,
@@ -68,20 +71,33 @@ llvm::Value *Codegen::getValue(Inst *I) {
   if (ReplacedValues.find(I) != ReplacedValues.end())
     return ReplacedValues.at(I);
 
+  if (InstValueMap) {
+    if (auto it = InstValueMap->find(I); it != InstValueMap->end()) {
+      return it->second;
+    }
+  }
+
+  auto SaveToInstValueMap = [this, I](Value *V) {
+    if (InstValueMap) {
+      (*InstValueMap)[I] = V;
+    }
+    return V;
+  };
+
   if (I->Origins.size() > 0) {
     // if there's an Origin, we're connecting to existing code
     for (auto V : I->Origins) {
       if (V->getType() != T)
         continue; // TODO: can we assert this doesn't happen?
       if (isa<Argument>(V) || isa<Constant>(V))
-        return V;
+        return SaveToInstValueMap(V);
       if (auto IP = dyn_cast<Instruction>(V)) {
         if (DT->dominates(IP, ReplacedInst)) {
           ++InstructionReplaced;
-          return V;
+          return SaveToInstValueMap(V);
         } else {
-	  if (DebugLevel > 2)
-	    llvm::errs() << "dominance check failed\n";
+          if (DebugLevel > 2)
+            llvm::errs() << "dominance check failed\n";
           ++DominanceCheckFailed;
         }
       } else {
@@ -90,13 +106,17 @@ llvm::Value *Codegen::getValue(Inst *I) {
     }
     if (DebugLevel > 2)
       llvm::errs() << "returning nullptr from getValue()\n";
-    return nullptr;
+    return SaveToInstValueMap(nullptr);
   }
 
   // otherwise, recursively generate code
   Value *V0 = Codegen::getValue(Ops[0]);
   if (!V0)
-    return nullptr;
+    return SaveToInstValueMap(nullptr);
+
+  if (auto it = InstToBlockMap.find(I); it != InstToBlockMap.end()) {
+    Builder.SetInsertPoint(it->second);
+  }
 
   // PHI nodes must be the first instructions in a basic block. If we're
   // replacing a PHI node with another instruction, make sure it comes after the
@@ -112,22 +132,22 @@ llvm::Value *Codegen::getValue(Inst *I) {
   case 1: {
     switch (I->K) {
     case Inst::SExt:
-      return Builder.CreateSExt(V0, T);
+      return SaveToInstValueMap(Builder.CreateSExt(V0, T));
     case Inst::ZExt:
-      return Builder.CreateZExt(V0, T);
+      return SaveToInstValueMap(Builder.CreateZExt(V0, T));
     case Inst::Trunc:
-      return Builder.CreateTrunc(V0, T);
+      return SaveToInstValueMap(Builder.CreateTrunc(V0, T));
     case Inst::CtPop: {
       Function *F = Intrinsic::getDeclaration(M, Intrinsic::ctpop, T);
-      return Builder.CreateCall(F, V0);
+      return SaveToInstValueMap(Builder.CreateCall(F, V0));
     }
     case Inst::BSwap: {
       Function *F = Intrinsic::getDeclaration(M, Intrinsic::bswap, T);
-      return Builder.CreateCall(F, V0);
+      return SaveToInstValueMap(Builder.CreateCall(F, V0));
     }
     case Inst::BitReverse: {
       Function *F = Intrinsic::getDeclaration(M, Intrinsic::bitreverse, T);
-      return Builder.CreateCall(F, V0);
+      return SaveToInstValueMap(Builder.CreateCall(F, V0));
     }
     case Inst::Cttz: {
       Function *F = Intrinsic::getDeclaration(M, Intrinsic::cttz, T);
@@ -135,17 +155,17 @@ llvm::Value *Codegen::getValue(Inst *I) {
       // <is_zero_undef> must be a constant and is a flag to indicate whether
       // the intrinsic should ensure that a zero as the first argument produces
       // a defined result.
-      return Builder.CreateCall(
-          F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))});
+      return SaveToInstValueMap(Builder.CreateCall(
+          F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))}));
     }
     case Inst::Ctlz: {
       // Ditto
       Function *F = Intrinsic::getDeclaration(M, Intrinsic::ctlz, T);
-      return Builder.CreateCall(
-          F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))});
+      return SaveToInstValueMap(Builder.CreateCall(
+          F, {V0, ConstantInt::get(V0->getContext(), APInt(1, 0))}));
     }
     case Inst::Freeze:
-      return Builder.CreateFreeze(V0);
+      return SaveToInstValueMap(Builder.CreateFreeze(V0));
     default:
       break;
     }
@@ -154,78 +174,82 @@ llvm::Value *Codegen::getValue(Inst *I) {
   case 2: {
     Value *V1 = Codegen::getValue(Ops[1]);
     if (!V1)
-      return nullptr;
+      return SaveToInstValueMap(nullptr);
     switch (I->K) {
     case Inst::And:
-      return Builder.CreateAnd(V0, V1);
+      return SaveToInstValueMap(Builder.CreateAnd(V0, V1));
     case Inst::Or:
-      return Builder.CreateOr(V0, V1);
+      return SaveToInstValueMap(Builder.CreateOr(V0, V1));
     case Inst::Xor:
-      return Builder.CreateXor(V0, V1);
+      return SaveToInstValueMap(Builder.CreateXor(V0, V1));
     case Inst::Add:
     case Inst::AddNSW:
     case Inst::AddNUW:
     case Inst::AddNW:
-      return Builder.CreateAdd(
+      return SaveToInstValueMap(Builder.CreateAdd(
           V0, V1, /*Name=*/{},
           /*HasNUW=*/I->K == Inst::AddNW || I->K == Inst::AddNUW,
-          /*HasNSW=*/I->K == Inst::AddNW || I->K == Inst::AddNSW);
+          /*HasNSW=*/I->K == Inst::AddNW || I->K == Inst::AddNSW));
     case Inst::Sub:
     case Inst::SubNSW:
     case Inst::SubNUW:
     case Inst::SubNW:
-      return Builder.CreateSub(
+      return SaveToInstValueMap(Builder.CreateSub(
           V0, V1, /*Name=*/{},
           /*HasNUW=*/I->K == Inst::SubNW || I->K == Inst::SubNUW,
-          /*HasNSW=*/I->K == Inst::SubNW || I->K == Inst::SubNSW);
+          /*HasNSW=*/I->K == Inst::SubNW || I->K == Inst::SubNSW));
     case Inst::Mul:
     case Inst::MulNSW:
     case Inst::MulNUW:
     case Inst::MulNW:
-      return Builder.CreateMul(
+      return SaveToInstValueMap(Builder.CreateMul(
           V0, V1, /*Name=*/{},
           /*HasNUW=*/I->K == Inst::MulNW || I->K == Inst::MulNUW,
-          /*HasNSW=*/I->K == Inst::MulNW || I->K == Inst::MulNSW);
+          /*HasNSW=*/I->K == Inst::MulNW || I->K == Inst::MulNSW));
     case Inst::UDiv:
     case Inst::UDivExact:
-      return Builder.CreateUDiv(V0, V1, /*Name=*/{},
-                                /*IsExact=*/I->K == Inst::UDivExact);
+      return SaveToInstValueMap(
+          Builder.CreateUDiv(V0, V1, /*Name=*/{},
+                             /*IsExact=*/I->K == Inst::UDivExact));
     case Inst::SDiv:
     case Inst::SDivExact:
-      return Builder.CreateSDiv(V0, V1, /*Name=*/{},
-                                /*IsExact=*/I->K == Inst::SDivExact);
+      return SaveToInstValueMap(
+          Builder.CreateSDiv(V0, V1, /*Name=*/{},
+                             /*IsExact=*/I->K == Inst::SDivExact));
     case Inst::URem:
-      return Builder.CreateURem(V0, V1);
+      return SaveToInstValueMap(Builder.CreateURem(V0, V1));
     case Inst::SRem:
-      return Builder.CreateSRem(V0, V1);
+      return SaveToInstValueMap(Builder.CreateSRem(V0, V1));
     case Inst::Shl:
     case Inst::ShlNSW:
     case Inst::ShlNUW:
     case Inst::ShlNW:
-      return Builder.CreateShl(
+      return SaveToInstValueMap(Builder.CreateShl(
           V0, V1, /*Name=*/{},
           /*HasNUW=*/I->K == Inst::ShlNW || I->K == Inst::ShlNUW,
-          /*HasNSW=*/I->K == Inst::ShlNW || I->K == Inst::ShlNSW);
+          /*HasNSW=*/I->K == Inst::ShlNW || I->K == Inst::ShlNSW));
     case Inst::AShr:
     case Inst::AShrExact:
-      return Builder.CreateAShr(V0, V1, /*Name=*/{},
-                                /*IsExact=*/I->K == Inst::AShrExact);
+      return SaveToInstValueMap(
+          Builder.CreateAShr(V0, V1, /*Name=*/{},
+                             /*IsExact=*/I->K == Inst::AShrExact));
     case Inst::LShr:
     case Inst::LShrExact:
-      return Builder.CreateLShr(V0, V1, /*Name=*/{},
-                                /*IsExact=*/I->K == Inst::LShrExact);
+      return SaveToInstValueMap(
+          Builder.CreateLShr(V0, V1, /*Name=*/{},
+                             /*IsExact=*/I->K == Inst::LShrExact));
     case Inst::Ne:
-      return Builder.CreateICmpNE(V0, V1);
+      return SaveToInstValueMap(Builder.CreateICmpNE(V0, V1));
     case Inst::Eq:
-      return Builder.CreateICmpEQ(V0, V1);
+      return SaveToInstValueMap(Builder.CreateICmpEQ(V0, V1));
     case Inst::Ult:
-      return Builder.CreateICmpULT(V0, V1);
+      return SaveToInstValueMap(Builder.CreateICmpULT(V0, V1));
     case Inst::Slt:
-      return Builder.CreateICmpSLT(V0, V1);
+      return SaveToInstValueMap(Builder.CreateICmpSLT(V0, V1));
     case Inst::Ule:
-      return Builder.CreateICmpULE(V0, V1);
+      return SaveToInstValueMap(Builder.CreateICmpULE(V0, V1));
     case Inst::Sle:
-      return Builder.CreateICmpSLE(V0, V1);
+      return SaveToInstValueMap(Builder.CreateICmpSLE(V0, V1));
     case Inst::SAddO:
     case Inst::UAddO:
     case Inst::SSubO:
@@ -234,10 +258,12 @@ llvm::Value *Codegen::getValue(Inst *I) {
     case Inst::UMulO:
       // FIXME: We only get here because it is the second argument of
       // ".with.overflow" instrs. This is not otherwise reachable.
-      // BUT, we can't return nullptr, else we completely bailout.
-      return llvm::ConstantInt::getFalse(Context);
+      // BUT, we can't return SaveToInstValueMap(nullptr, else we completely
+      // bailout.
+      return SaveToInstValueMap(llvm::ConstantInt::getFalse(Context));
     case Inst::ExtractValue:
-      return Builder.CreateExtractValue(V0, I->Ops[1]->Val.getZExtValue());
+      return SaveToInstValueMap(
+          Builder.CreateExtractValue(V0, I->Ops[1]->Val.getZExtValue()));
     case Inst::SAddWithOverflow:
     case Inst::UAddWithOverflow:
     case Inst::SSubWithOverflow:
@@ -271,16 +297,20 @@ llvm::Value *Codegen::getValue(Inst *I) {
       }();
       T = Type::getIntNTy(Context, Ops[0]->orderedOps()[0]->Width);
       Function *F = Intrinsic::getDeclaration(M, ID, T);
-      return Builder.CreateCall(F, {V0, V1});
+      return SaveToInstValueMap(Builder.CreateCall(F, {V0, V1}));
     }
     case Inst::SAddSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::sadd_sat, T), {V0, V1});
+      return SaveToInstValueMap(Builder.CreateCall(
+          Intrinsic::getDeclaration(M, Intrinsic::sadd_sat, T), {V0, V1}));
     case Inst::UAddSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::uadd_sat, T), {V0, V1});
+      return SaveToInstValueMap(Builder.CreateCall(
+          Intrinsic::getDeclaration(M, Intrinsic::uadd_sat, T), {V0, V1}));
     case Inst::SSubSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1});
+      return SaveToInstValueMap(Builder.CreateCall(
+          Intrinsic::getDeclaration(M, Intrinsic::ssub_sat, T), {V0, V1}));
     case Inst::USubSat:
-      return Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::usub_sat, T), {V0, V1});
+      return SaveToInstValueMap(Builder.CreateCall(
+          Intrinsic::getDeclaration(M, Intrinsic::usub_sat, T), {V0, V1}));
     default:
       break;
     }
@@ -290,15 +320,15 @@ llvm::Value *Codegen::getValue(Inst *I) {
     Value *V1 = Codegen::getValue(Ops[1]);
     Value *V2 = Codegen::getValue(Ops[2]);
     if (!V1 || !V2)
-      return nullptr;
+      return SaveToInstValueMap(nullptr);
     switch (I->K) {
     case Inst::Select:
-      return Builder.CreateSelect(V0, V1, V2);
+      return SaveToInstValueMap(Builder.CreateSelect(V0, V1, V2));
     case Inst::FShl:
     case Inst::FShr: {
       Intrinsic::ID ID = I->K == Inst::FShl ? Intrinsic::fshl : Intrinsic::fshr;
       Function *F = Intrinsic::getDeclaration(M, ID, T);
-      return Builder.CreateCall(F, {V0, V1, V2});
+      return SaveToInstValueMap(Builder.CreateCall(F, {V0, V1, V2}));
     }
     default:
       break;
@@ -316,17 +346,20 @@ llvm::Value *Codegen::getValue(Inst *I) {
   // FIXME: PHI
 
   report_fatal_error(((std::string) "Unhandled Souper instruction " +
-                      Inst::getKindName(I->K) + " in Codegen::getValue()").c_str());
+                      Inst::getKindName(I->K) + " in Codegen::getValue()")
+                         .c_str());
 }
 
 static std::vector<llvm::Type *>
-GetInputArgumentTypes(const InstContext &IC, llvm::LLVMContext &Context, Inst *Root) {
+GetInputArgumentTypes(const InstContext &IC, llvm::LLVMContext &Context,
+                      Inst *Root) {
   const std::vector<Inst *> AllVariables = IC.getVariablesFor(Root);
 
   std::vector<llvm::Type *> ArgTypes;
   ArgTypes.reserve(AllVariables.size());
   for (const Inst *const Var : AllVariables) {
-    // llvm::errs() << "arg with width " << Var->Width << " and number " << Var->Number << "\n";
+    // llvm::errs() << "arg with width " << Var->Width << " and number " <<
+    // Var->Number << "\n";
     ArgTypes.emplace_back(Type::getIntNTy(Context, Var->Width));
   }
 
@@ -349,7 +382,8 @@ static std::map<Inst *, Value *> GetArgsMapping(const InstContext &IC,
 /// returned.
 bool genModule(InstContext &IC, souper::Inst *I, llvm::Module &Module) {
   llvm::LLVMContext &Context = Module.getContext();
-  const std::vector<llvm::Type *> ArgTypes = GetInputArgumentTypes(IC, Context, I);
+  const std::vector<llvm::Type *> ArgTypes =
+      GetInputArgumentTypes(IC, Context, I);
   const auto FT = llvm::FunctionType::get(
       /*Result=*/Codegen::GetInstReturnType(Context, I),
       /*Params=*/ArgTypes, /*isVarArg=*/false);
@@ -368,6 +402,99 @@ bool genModule(InstContext &IC, souper::Inst *I, llvm::Module &Module) {
                       .getValue(I);
 
   Builder.CreateRet(RetVal);
+
+  // Validate the generated code, checking for consistency.
+  if (verifyFunction(*F, &llvm::errs()))
+    return true;
+  if (verifyModule(Module, &llvm::errs()))
+    return true;
+  return false;
+}
+
+bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
+                           llvm::Module &Module) {
+  auto I = Rep.Mapping.LHS;
+
+  llvm::LLVMContext &Context = Module.getContext();
+  const std::vector<llvm::Type *> ArgTypes =
+      GetInputArgumentTypes(IC, Context, I);
+  const auto FT = llvm::FunctionType::get(
+      /*Result=*/Codegen::GetInstReturnType(Context, I),
+      /*Params=*/ArgTypes, /*isVarArg=*/false);
+
+  Function *F = Function::Create(FT, Function::ExternalLinkage, "fun", &Module);
+
+  const std::map<Inst *, Value *> Args = GetArgsMapping(IC, F, I);
+
+  llvm::IRBuilder<> Builder(Context);
+
+  // Create basic blocks
+  BasicBlock *BB_Entry = BasicBlock::Create(Context, "entry", F);
+  std::vector<BasicBlock *> BB_PCs;
+  for (int i = 0; i < Rep.PCs.size(); ++i) {
+    BB_PCs.push_back(BasicBlock::Create(Context, "pc_" + std::to_string(i), F));
+  }
+  BasicBlock *BB_Unreachable =
+      BasicBlock::Create(Context, "unreachable_block", F);
+
+  // Map inst to blocks
+
+  std::map<Inst *, BasicBlock *> BlockPerInst;
+  auto map_recursively = [&BlockPerInst](Inst *root, BasicBlock *block) {
+    std::queue<Inst *> Q;
+    Q.push(root);
+    while (!Q.empty()) {
+      Inst *InstToProcess = Q.front();
+      Q.pop();
+      BlockPerInst[InstToProcess] = block;
+      for (auto Op : InstToProcess->Ops) {
+        if (BlockPerInst.find(Op) == BlockPerInst.end()) {
+          Q.push(Op);
+        }
+      }
+    }
+  };
+  for (int i = 0; i < BB_PCs.size(); ++i) {
+    auto &pc = Rep.PCs[i];
+    map_recursively(pc.LHS, i == 0 ? BB_Entry : BB_PCs[i - 1]);
+  }
+  map_recursively(I, BB_PCs.back());
+
+  // Insert instructions
+
+  std::map<Inst *, llvm::Value *> OutInstValueMap;
+  for (int i = 0; i < BB_PCs.size(); ++i) {
+    auto &pc = Rep.PCs[i];
+    Builder.SetInsertPoint(i == 0 ? BB_Entry : BB_PCs[i - 1]);
+
+    if (pc.RHS->K != Inst::Const) {
+      exit(-1);
+    }
+
+    BasicBlock *BB_True, *BB_False;
+    if (pc.RHS->Val.getBoolValue()) {
+      BB_True = BB_PCs[i];
+      BB_False = BB_Unreachable;
+    } else {
+      BB_True = BB_Unreachable;
+      BB_False = BB_PCs[i];
+    }
+    Builder.CreateCondBr(Codegen(Context, &Module, Builder, /*DT*/ nullptr,
+                                 /*ReplacedInst*/ nullptr, Args, BlockPerInst,
+                                 &OutInstValueMap)
+                             .getValue(pc.LHS),
+                         BB_True, BB_False);
+  }
+
+  Builder.SetInsertPoint(BB_PCs.back());
+  Value *RetVal = Codegen(Context, &Module, Builder, /*DT*/ nullptr,
+                          /*ReplacedInst*/ nullptr, Args, BlockPerInst)
+                      .getValue(I);
+
+  Builder.CreateRet(RetVal);
+
+  Builder.SetInsertPoint(BB_Unreachable);
+  Builder.CreateUnreachable();
 
   // Validate the generated code, checking for consistency.
   if (verifyFunction(*F, &llvm::errs()))

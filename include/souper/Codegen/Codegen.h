@@ -17,6 +17,7 @@
 
 #include "souper/Inst/Inst.h"
 #include "souper/Parser/Parser.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
@@ -37,14 +38,19 @@ class Codegen {
 
   llvm::Instruction *ReplacedInst;
   const std::map<Inst *, llvm::Value *> &ReplacedValues;
+  const std::map<Inst *, llvm::BasicBlock *> &InstToBlockMap;
+  std::map<Inst *, llvm::Value *> *InstValueMap;
 
 public:
   Codegen(llvm::LLVMContext &Context_, llvm::Module *M_,
           llvm::IRBuilder<> &Builder_, llvm::DominatorTree *DT_,
           llvm::Instruction *ReplacedInst_,
-          const std::map<Inst *, llvm::Value *> &ReplacedValues_)
+          const std::map<Inst *, llvm::Value *> &ReplacedValues_,
+          const std::map<Inst *, llvm::BasicBlock *> &InstToBlockMap_ = {},
+          std::map<Inst *, llvm::Value *> *OutInstValueMap_ = nullptr)
       : Context(Context_), M(M_), Builder(Builder_), DT(DT_),
-        ReplacedInst(ReplacedInst_), ReplacedValues(ReplacedValues_) {}
+        ReplacedInst(ReplacedInst_), ReplacedValues(ReplacedValues_),
+        InstToBlockMap(InstToBlockMap_), InstValueMap(OutInstValueMap_) {}
 
   static llvm::Type *GetInstReturnType(llvm::LLVMContext &Context, Inst *I);
 
@@ -56,12 +62,15 @@ public:
 // returned.
 bool genModule(InstContext &IC, Inst *I, llvm::Module &Module);
 
+bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
+                           llvm::Module &Module);
+
 struct BackendCost {
   std::vector<int> C;
 };
 
-  // void getBackendCost(InstContext &IC, Inst *I, BackendCost &BC);
- 
+// void getBackendCost(InstContext &IC, Inst *I, BackendCost &BC);
+
 bool compareCosts(const BackendCost &C1, const BackendCost &C2);
 
 } // namespace souper

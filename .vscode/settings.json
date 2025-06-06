@@ -1,0 +1,6 @@
+{
+    "cmake.exportCompileCommandsFile": true,
+    "cmake.configureArgs": [
+        "-DLLVM_BUILD_TYPE=Release"
+    ]
+}
