@@ -499,13 +499,15 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
     auto &pc = Rep.PCs[i];
     map_recursively(pc.LHS, i == 0 ? BB_Entry : BB_PCs[i - 1]);
   }
-  map_recursively(I, BB_PCs.back());
+  if (!BB_PCs.empty()) {
+    map_recursively(I, BB_PCs.back());
+  }
 
   // Insert instructions
 
   std::map<Inst *, llvm::Value *> OutInstValueMap;
 
-  Builder.SetInsertPoint(BB_PCs.back());
+  Builder.SetInsertPoint(BB_PCs.empty() ? BB_Entry : BB_PCs.back());
   Value *RetVal =
       Codegen(Context, &Module, Builder, /*DT*/ nullptr,
               /*ReplacedInst*/ nullptr, Args, BlockPerInst, &OutInstValueMap)
