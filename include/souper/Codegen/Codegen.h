@@ -62,7 +62,8 @@ public:
 // returned.
 bool genModule(InstContext &IC, Inst *I, llvm::Module &Module);
 
-bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
+bool genModuleWithBranches(InstContext &IC, Inst *I,
+                           const std::vector<InstMapping> &PCs,
                            llvm::Module &Module);
 
 struct BackendCost {

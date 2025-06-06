@@ -452,10 +452,9 @@ bool genModule(InstContext &IC, souper::Inst *I, llvm::Module &Module) {
   return false;
 }
 
-bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
+bool genModuleWithBranches(InstContext &IC, Inst *I,
+                           const std::vector<InstMapping> &PCs,
                            llvm::Module &Module) {
-  auto I = Rep.Mapping.LHS;
-
   llvm::LLVMContext &Context = Module.getContext();
   std::vector<llvm::Type *> ArgTypes = GetInputArgumentTypes(IC, Context);
   const auto FT = llvm::FunctionType::get(
@@ -471,7 +470,7 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
   // Create basic blocks
   BasicBlock *BB_Entry = BasicBlock::Create(Context, "entry", F);
   std::vector<BasicBlock *> BB_PCs;
-  for (int i = 0; i < Rep.PCs.size(); ++i) {
+  for (int i = 0; i < PCs.size(); ++i) {
     BB_PCs.push_back(BasicBlock::Create(Context, "pc_" + std::to_string(i), F));
   }
   BasicBlock *BB_Unreachable =
@@ -496,7 +495,7 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
     }
   };
   for (int i = 0; i < BB_PCs.size(); ++i) {
-    auto &pc = Rep.PCs[i];
+    auto &pc = PCs[i];
     map_recursively(pc.LHS, i == 0 ? BB_Entry : BB_PCs[i - 1]);
   }
   if (!BB_PCs.empty()) {
@@ -516,7 +515,7 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
   Builder.CreateRet(RetVal);
 
   for (int i = 0; i < BB_PCs.size(); ++i) {
-    auto &pc = Rep.PCs[i];
+    auto &pc = PCs[i];
     Builder.SetInsertPoint(i == 0 ? BB_Entry : BB_PCs[i - 1]);
 
     if (pc.RHS->K != Inst::Const) {

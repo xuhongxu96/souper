@@ -45,9 +45,9 @@ static cl::opt<bool> RHS("rhs",
                          cl::desc("input a replacement and convert ths RHS"),
                          cl::init(false));
 
-static cl::opt<bool>
-    Branch("branch", cl::desc("generate a module with branches for the LHS"),
-           cl::init(false));
+static cl::opt<bool> Branch("branch",
+                            cl::desc("generate a module with branches"),
+                            cl::init(false));
 
 static cl::opt<std::string> OutputFilename(
     "o", cl::desc("<output destination for textual LLVM IR (default=stdout)>"),
@@ -74,7 +74,7 @@ int Work(const MemoryBufferRef &MB) {
   if (LHS) {
     llvm::Module Module("souper.ll", Context);
     if (Branch) {
-      if (genModuleWithBranches(IC, Rep, Module))
+      if (genModuleWithBranches(IC, Rep.Mapping.LHS, Rep.PCs, Module))
         return 1;
     } else {
       if (genModule(IC, Rep.Mapping.LHS, Module))
@@ -89,8 +89,13 @@ int Work(const MemoryBufferRef &MB) {
 
   if (RHS || (!LHS && !RHS)) {
     llvm::Module Module("souper.ll", Context);
-    if (genModule(IC, Rep.Mapping.RHS, Module))
-      return 1;
+    if (Branch) {
+      if (genModuleWithBranches(IC, Rep.Mapping.RHS, {}, Module))
+        return 1;
+    } else {
+      if (genModule(IC, Rep.Mapping.RHS, Module))
+        return 1;
+    }
     std::error_code EC;
     llvm::raw_fd_ostream OS(OutputFilename, EC);
     OS << "; cost = " << cost(Rep.Mapping.RHS) << "\n\n";
