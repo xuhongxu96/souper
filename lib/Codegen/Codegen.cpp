@@ -14,6 +14,7 @@
 
 #include "souper/Codegen/Codegen.h"
 #include "souper/Inst/Inst.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Dominators.h"
@@ -114,8 +115,9 @@ llvm::Value *Codegen::getValue(Inst *I) {
   if (!V0)
     return SaveToInstValueMap(nullptr);
 
+  BasicBlock *ForcedInsertPoint = nullptr;
   if (auto it = InstToBlockMap.find(I); it != InstToBlockMap.end()) {
-    Builder.SetInsertPoint(it->second);
+    ForcedInsertPoint = it->second;
   }
 
   // PHI nodes must be the first instructions in a basic block. If we're
@@ -126,6 +128,10 @@ llvm::Value *Codegen::getValue(Inst *I) {
     while (isa<PHINode>(InsertPoint->getNextNode()))
       InsertPoint = InsertPoint->getNextNode();
     Builder.SetInsertPoint(InsertPoint->getNextNode());
+  }
+
+  if (ForcedInsertPoint) {
+    Builder.SetInsertPoint(ForcedInsertPoint);
   }
 
   switch (Ops.size()) {
@@ -173,6 +179,9 @@ llvm::Value *Codegen::getValue(Inst *I) {
   }
   case 2: {
     Value *V1 = Codegen::getValue(Ops[1]);
+    if (ForcedInsertPoint) {
+      Builder.SetInsertPoint(ForcedInsertPoint);
+    }
     if (!V1)
       return SaveToInstValueMap(nullptr);
     switch (I->K) {
@@ -276,6 +285,9 @@ llvm::Value *Codegen::getValue(Inst *I) {
       }
       V0 = Codegen::getValue(Ops[0]->orderedOps()[0]);
       V1 = Codegen::getValue(Ops[0]->orderedOps()[1]);
+      if (ForcedInsertPoint) {
+        Builder.SetInsertPoint(ForcedInsertPoint);
+      }
       Intrinsic::ID ID = [K = I->K]() {
         switch (K) {
         case Inst::SAddWithOverflow:
@@ -319,6 +331,9 @@ llvm::Value *Codegen::getValue(Inst *I) {
   case 3: {
     Value *V1 = Codegen::getValue(Ops[1]);
     Value *V2 = Codegen::getValue(Ops[2]);
+    if (ForcedInsertPoint) {
+      Builder.SetInsertPoint(ForcedInsertPoint);
+    }
     if (!V1 || !V2)
       return SaveToInstValueMap(nullptr);
     switch (I->K) {
@@ -377,6 +392,32 @@ static std::map<Inst *, Value *> GetArgsMapping(const InstContext &IC,
   return Args;
 };
 
+static std::vector<llvm::Type *>
+GetInputArgumentTypes(const InstContext &IC, llvm::LLVMContext &Context) {
+  const std::vector<Inst *> AllVariables = IC.getVariables();
+
+  std::vector<llvm::Type *> ArgTypes;
+  ArgTypes.reserve(AllVariables.size());
+  for (const Inst *const Var : AllVariables) {
+    // llvm::errs() << "arg with width " << Var->Width << " and number " <<
+    // Var->Number << "\n";
+    ArgTypes.emplace_back(Type::getIntNTy(Context, Var->Width));
+  }
+
+  return ArgTypes;
+}
+
+static std::map<Inst *, Value *> GetArgsMapping(const InstContext &IC,
+                                                Function *F) {
+  std::map<Inst *, Value *> Args;
+
+  const std::vector<Inst *> AllVariables = IC.getVariables();
+  for (auto zz : llvm::zip(AllVariables, F->args()))
+    Args[std::get<0>(zz)] = &(std::get<1>(zz));
+
+  return Args;
+};
+
 /// If there are no errors, the function returns false. If an error is found,
 /// a message describing the error is written to OS (if non-null) and true is
 /// returned.
@@ -416,15 +457,14 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
   auto I = Rep.Mapping.LHS;
 
   llvm::LLVMContext &Context = Module.getContext();
-  const std::vector<llvm::Type *> ArgTypes =
-      GetInputArgumentTypes(IC, Context, I);
+  std::vector<llvm::Type *> ArgTypes = GetInputArgumentTypes(IC, Context);
   const auto FT = llvm::FunctionType::get(
       /*Result=*/Codegen::GetInstReturnType(Context, I),
       /*Params=*/ArgTypes, /*isVarArg=*/false);
 
   Function *F = Function::Create(FT, Function::ExternalLinkage, "fun", &Module);
 
-  const std::map<Inst *, Value *> Args = GetArgsMapping(IC, F, I);
+  const std::map<Inst *, Value *> Args = GetArgsMapping(IC, F);
 
   llvm::IRBuilder<> Builder(Context);
 
@@ -435,7 +475,8 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
     BB_PCs.push_back(BasicBlock::Create(Context, "pc_" + std::to_string(i), F));
   }
   BasicBlock *BB_Unreachable =
-      BasicBlock::Create(Context, "unreachable_block", F);
+      BB_PCs.empty() ? nullptr
+                     : BasicBlock::Create(Context, "unreachable_block", F);
 
   // Map inst to blocks
 
@@ -463,6 +504,15 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
   // Insert instructions
 
   std::map<Inst *, llvm::Value *> OutInstValueMap;
+
+  Builder.SetInsertPoint(BB_PCs.back());
+  Value *RetVal =
+      Codegen(Context, &Module, Builder, /*DT*/ nullptr,
+              /*ReplacedInst*/ nullptr, Args, BlockPerInst, &OutInstValueMap)
+          .getValue(I);
+
+  Builder.CreateRet(RetVal);
+
   for (int i = 0; i < BB_PCs.size(); ++i) {
     auto &pc = Rep.PCs[i];
     Builder.SetInsertPoint(i == 0 ? BB_Entry : BB_PCs[i - 1]);
@@ -486,15 +536,16 @@ bool genModuleWithBranches(InstContext &IC, const ParsedReplacement &Rep,
                          BB_True, BB_False);
   }
 
-  Builder.SetInsertPoint(BB_PCs.back());
-  Value *RetVal = Codegen(Context, &Module, Builder, /*DT*/ nullptr,
-                          /*ReplacedInst*/ nullptr, Args, BlockPerInst)
-                      .getValue(I);
+  if (BB_Unreachable) {
+    Builder.SetInsertPoint(BB_Unreachable);
+    Builder.CreateUnreachable();
+  }
 
-  Builder.CreateRet(RetVal);
-
-  Builder.SetInsertPoint(BB_Unreachable);
-  Builder.CreateUnreachable();
+  // std::error_code EC;
+  // llvm::raw_fd_ostream OS("tmp", EC);
+  // OS << "; cost = " << cost(Rep.Mapping.RHS) << "\n\n";
+  // OS << Module;
+  // OS.flush();
 
   // Validate the generated code, checking for consistency.
   if (verifyFunction(*F, &llvm::errs()))
