@@ -482,7 +482,9 @@ bool genModuleWithBranches(InstContext &IC, Inst *I,
   std::map<Inst *, BasicBlock *> BlockPerInst;
   auto map_recursively = [&BlockPerInst](Inst *root, BasicBlock *block) {
     std::queue<Inst *> Q;
-    Q.push(root);
+    if (BlockPerInst.find(root) == BlockPerInst.end()) {
+      Q.push(root);
+    }
     while (!Q.empty()) {
       Inst *InstToProcess = Q.front();
       Q.pop();
@@ -522,6 +524,25 @@ bool genModuleWithBranches(InstContext &IC, Inst *I,
       exit(-1);
     }
 
+    Value *CondVal = nullptr;
+
+    if (pc.RHS->Width != 1) {
+      CondVal = Builder.CreateICmpEQ(
+          Codegen(Context, &Module, Builder, /*DT*/ nullptr,
+                  /*ReplacedInst*/ nullptr, Args, BlockPerInst,
+                  &OutInstValueMap)
+              .getValue(pc.LHS),
+          Codegen(Context, &Module, Builder, /*DT*/ nullptr,
+                  /*ReplacedInst*/ nullptr, Args, BlockPerInst,
+                  &OutInstValueMap)
+              .getValue(pc.RHS));
+    } else {
+      CondVal = Codegen(Context, &Module, Builder, /*DT*/ nullptr,
+                        /*ReplacedInst*/ nullptr, Args, BlockPerInst,
+                        &OutInstValueMap)
+                    .getValue(pc.LHS);
+    }
+
     BasicBlock *BB_True, *BB_False;
     if (pc.RHS->Val.getBoolValue()) {
       BB_True = BB_PCs[i];
@@ -530,11 +551,7 @@ bool genModuleWithBranches(InstContext &IC, Inst *I,
       BB_True = BB_Unreachable;
       BB_False = BB_PCs[i];
     }
-    Builder.CreateCondBr(Codegen(Context, &Module, Builder, /*DT*/ nullptr,
-                                 /*ReplacedInst*/ nullptr, Args, BlockPerInst,
-                                 &OutInstValueMap)
-                             .getValue(pc.LHS),
-                         BB_True, BB_False);
+    Builder.CreateCondBr(CondVal, BB_True, BB_False);
   }
 
   if (BB_Unreachable) {
@@ -544,7 +561,6 @@ bool genModuleWithBranches(InstContext &IC, Inst *I,
 
   // std::error_code EC;
   // llvm::raw_fd_ostream OS("tmp", EC);
-  // OS << "; cost = " << cost(Rep.Mapping.RHS) << "\n\n";
   // OS << Module;
   // OS.flush();
 
