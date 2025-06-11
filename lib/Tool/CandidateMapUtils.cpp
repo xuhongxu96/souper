@@ -15,6 +15,8 @@
 #include "souper/Tool/CandidateMapUtils.h"
 #include "souper/Util/DfaUtils.h"
 
+#include "souper/KVStore/KVStore.h"
+#include "souper/SMTLIB2/Solver.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
@@ -22,9 +24,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
-#include "souper/KVStore/KVStore.h"
-#include "souper/SMTLIB2/Solver.h"
-
 
 void souper::AddToCandidateMap(CandidateMap &M,
                                const CandidateReplacement &CR) {
@@ -32,8 +31,12 @@ void souper::AddToCandidateMap(CandidateMap &M,
 }
 
 void souper::AddModuleToCandidateMap(InstContext &IC, ExprBuilderContext &EBC,
-                                     CandidateMap &CandMap, llvm::Module &M) {
+                                     CandidateMap &CandMap, llvm::Module &M,
+                                     const std::string &FunctionName) {
   for (auto &F : M) {
+    if (!FunctionName.empty() && F.getName() != FunctionName) {
+      continue;
+    }
     if (!F.isDeclaration()) {
       FunctionCandidateSet CS = ExtractCandidates(F, IC, EBC);
       for (auto &B : CS.Blocks) {
@@ -46,19 +49,19 @@ void souper::AddModuleToCandidateMap(InstContext &IC, ExprBuilderContext &EBC,
 
 namespace souper {
 
-bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
-                       Solver *S, InstContext &IC, KVStore *KVForStaticProfile) {
+bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M, Solver *S,
+                       InstContext &IC, KVStore *KVForStaticProfile) {
   if (S) {
     OS << "; Listing valid replacements.\n";
     OS << "; Using solver: " << S->getName() << '\n';
 
     std::vector<int> Profile;
-    std::map<std::string,int> Index;
-    for (int I=0; I < M.size(); ++I) {
+    std::map<std::string, int> Index;
+    for (int I = 0; I < M.size(); ++I) {
       auto &Cand = M[I];
       ReplacementContext Context;
-      auto S = GetReplacementLHSString(Cand.BPCs, Cand.PCs,
-                                       Cand.Mapping.LHS, Context);
+      auto S = GetReplacementLHSString(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
+                                       Context);
       if (Index.find(S) == Index.end()) {
         Index[S] = I;
         Profile.push_back(1);
@@ -68,7 +71,7 @@ bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
       }
     }
 
-    for (int I=0; I < M.size(); ++I) {
+    for (int I = 0; I < M.size(); ++I) {
       if (Profile[I] == 0)
         continue;
       auto &Cand = M[I];
@@ -80,8 +83,10 @@ bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
         I->getDebugLoc().print(Loc);
         std::string HField = "sprofile " + Loc.str();
         ReplacementContext Context;
-        KVForStaticProfile->hIncrBy(GetReplacementLHSString(Cand.BPCs,
-            Cand.PCs, Cand.Mapping.LHS, Context), HField, 1);
+        KVForStaticProfile->hIncrBy(GetReplacementLHSString(Cand.BPCs, Cand.PCs,
+                                                            Cand.Mapping.LHS,
+                                                            Context),
+                                    HField, 1);
       }
 
       if (isInferDFA()) {
@@ -92,31 +97,30 @@ bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
 
         if (InferNeg) {
           bool Negative;
-          if (std::error_code EC = S->negative(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                                               Negative, IC)) {
+          if (std::error_code EC = S->negative(
+                  Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, Negative, IC)) {
             llvm::errs() << "Error: " << EC.message() << '\n';
             return false;
           } else {
-            OS << "; negative from souper: "
-               << convertToStr(Negative) << "\n";
+            OS << "; negative from souper: " << convertToStr(Negative) << "\n";
           }
         }
         if (InferNonNeg) {
           bool NonNegative;
-          if (std::error_code EC = S->nonNegative(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                                                  NonNegative, IC)) {
+          if (std::error_code EC = S->nonNegative(
+                  Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, NonNegative, IC)) {
             llvm::errs() << "Error: " << EC.message() << '\n';
             return false;
           } else {
-            OS << "; nonNegative from souper: "
-               << convertToStr(NonNegative) << "\n";
+            OS << "; nonNegative from souper: " << convertToStr(NonNegative)
+               << "\n";
           }
         }
         if (InferKnownBits) {
           unsigned W = Cand.Mapping.LHS->Width;
           KnownBits Known(W);
-          if (std::error_code EC = S->knownBits(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                                                Known, IC)) {
+          if (std::error_code EC = S->knownBits(Cand.BPCs, Cand.PCs,
+                                                Cand.Mapping.LHS, Known, IC)) {
             llvm::errs() << "Error: " << EC.message() << '\n';
             return false;
           } else {
@@ -126,43 +130,42 @@ bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
         }
         if (InferPowerTwo) {
           bool PowTwo;
-          if (std::error_code EC = S->powerTwo(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                                               PowTwo, IC)) {
+          if (std::error_code EC = S->powerTwo(Cand.BPCs, Cand.PCs,
+                                               Cand.Mapping.LHS, PowTwo, IC)) {
             llvm::errs() << "Error: " << EC.message() << '\n';
             return false;
           } else {
-            OS << "; powerOfTwo from souper: "
-               << convertToStr(PowTwo) << "\n";
+            OS << "; powerOfTwo from souper: " << convertToStr(PowTwo) << "\n";
           }
         }
         if (InferNonZero) {
           bool NonZero;
-          if (std::error_code EC = S->nonZero(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                                              NonZero, IC)) {
+          if (std::error_code EC = S->nonZero(Cand.BPCs, Cand.PCs,
+                                              Cand.Mapping.LHS, NonZero, IC)) {
             llvm::errs() << "Error: " << EC.message() << '\n';
             return false;
           } else {
-            OS << "; nonZero from souper: "
-               << convertToStr(NonZero) << "\n";
+            OS << "; nonZero from souper: " << convertToStr(NonZero) << "\n";
           }
         }
         if (InferSignBits) {
           unsigned SignBits;
-          if (std::error_code EC = S->signBits(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                                               SignBits, IC)) {
+          if (std::error_code EC = S->signBits(
+                  Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, SignBits, IC)) {
             llvm::errs() << "Error: " << EC.message() << '\n';
             return false;
           } else {
-            OS << "; signBits from souper: "
-               << std::to_string(SignBits) << "\n";
+            OS << "; signBits from souper: " << std::to_string(SignBits)
+               << "\n";
           }
         }
         if (InferRange) {
           unsigned W = Cand.Mapping.LHS->Width;
-          llvm::ConstantRange Range = S->constantRange(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, IC);
+          llvm::ConstantRange Range =
+              S->constantRange(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, IC);
 
-          OS << "; range from souper: " << "[" << Range.getLower()
-             << "," << Range.getUpper() << ")" << "\n";
+          OS << "; range from souper: " << "[" << Range.getLower() << ","
+             << Range.getUpper() << ")" << "\n";
         }
         if (InferDemandedBits) {
           llvm::errs() << "Error: Not Implemented\n";
@@ -171,8 +174,8 @@ bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
       } else {
         std::vector<Inst *> RHSs;
         if (std::error_code EC =
-            S->infer(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                     RHSs, /*AllowMultipleRHSs=*/false, IC)) {
+                S->infer(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS, RHSs,
+                         /*AllowMultipleRHSs=*/false, IC)) {
           llvm::errs() << "Unable to query solver: " << EC.message() << '\n';
           return false;
         }
@@ -212,14 +215,13 @@ bool CheckCandidateMap(llvm::Module &Mod, CandidateMap &M, Solver *S,
   bool OK = true;
   for (auto &Cand : M) {
     std::vector<Inst *> RHSs;
-    if (std::error_code EC =
-        S->infer(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
-                 RHSs, /*AllowMultipleRHSs=*/false, IC)) {
+    if (std::error_code EC = S->infer(Cand.BPCs, Cand.PCs, Cand.Mapping.LHS,
+                                      RHSs, /*AllowMultipleRHSs=*/false, IC)) {
       llvm::errs() << "Unable to query solver: " << EC.message() << '\n';
       return false;
     }
     if (!RHSs.empty()) {
-       // use the first RHS in list if there are multiple valid RHSs
+      // use the first RHS in list if there are multiple valid RHSs
       Cand.Mapping.RHS = RHSs.front();
       if (Cand.Mapping.RHS->K != Inst::Const) {
         llvm::errs() << "found replacement:\n";
@@ -254,7 +256,7 @@ bool CheckCandidateMap(llvm::Module &Mod, CandidateMap &M, Solver *S,
         continue;
       }
       llvm::APInt ExpectedVal =
-        mdconst::extract<ConstantInt>(ExpectedMD->getOperand(0))->getValue();
+          mdconst::extract<ConstantInt>(ExpectedMD->getOperand(0))->getValue();
       Inst->setMetadata(ExpectedID, 0);
       if (ExpectedVal.getBitWidth() != ActualVal.getBitWidth()) {
         llvm::errs() << "metadata width doesn't match value width\n";
@@ -294,4 +296,4 @@ bool CheckCandidateMap(llvm::Module &Mod, CandidateMap &M, Solver *S,
   return OK;
 }
 
-}
+} // namespace souper

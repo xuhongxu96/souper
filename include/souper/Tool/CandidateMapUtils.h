@@ -15,11 +15,11 @@
 #ifndef SOUPER_TOOL_CANDIDATEMAPUTILS_H
 #define SOUPER_TOOL_CANDIDATEMAPUTILS_H
 
-#include "llvm/Support/raw_ostream.h"
 #include "souper/Extractor/Candidates.h"
 #include "souper/Extractor/ExprBuilder.h"
 #include "souper/Extractor/Solver.h"
 #include "souper/KVStore/KVStore.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
 
@@ -36,15 +36,15 @@ typedef std::vector<CandidateReplacement> CandidateMap;
 void AddToCandidateMap(CandidateMap &M, const CandidateReplacement &CR);
 
 void AddModuleToCandidateMap(InstContext &IC, ExprBuilderContext &EBC,
-                             CandidateMap &CandMap, llvm::Module &M);
+                             CandidateMap &CandMap, llvm::Module &M,
+                             const std::string &FunctionName = "");
 
-bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M,
-                       Solver *Solver, InstContext &IC,
-                       KVStore *KVForStaticProfile);
+bool SolveCandidateMap(llvm::raw_ostream &OS, CandidateMap &M, Solver *Solver,
+                       InstContext &IC, KVStore *KVForStaticProfile);
 
 bool CheckCandidateMap(llvm::Module &Mod, CandidateMap &M, Solver *S,
                        InstContext &IC);
 
-}
+} // namespace souper
 
-#endif  // SOUPER_TOOL_CANDIDATEMAPUTILS_H
+#endif // SOUPER_TOOL_CANDIDATEMAPUTILS_H
