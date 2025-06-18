@@ -1,0 +1,32 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "souper2llvm",
+            "program": "${workspaceFolder}/build/souper2llvm",
+            "args": [
+                "-lhs",
+                // "-branch",
+                // "/home/hongxu/data/repo/souper-benchmark/cmp/a_d2i_fp.souper.stdout",
+                // "/home/hongxu/data/repo/souper-benchmark/results/a_int.souper.stdout",
+                // "/home/hongxu/data/repo/souper-benchmark/cmp/quic_channel.souper.stdout",
+                // "/home/hongxu/data/repo/souper-benchmark/cmp/signature.souper.stdout",
+                "/home/hongxu/data/repo/souper-benchmark/results/lpo/0wl2p8y6rrrpzev6cvvct17uf$$154.souper.stdout",
+                // "${workspaceFolder}/.vscode/test.ir",
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "souper",
+            "program": "${workspaceFolder}/build/souper",
+            "args": [
+                "-f", "src",
+                "/home/hongxu/data/repo/souper-benchmark/lpo-result/merged/merged$0wl2p8y6rrrpzev6cvvct17uf$$154.ll.ll",
+            ],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

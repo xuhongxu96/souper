@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "souper/Extractor/Candidates.h"
+#include "souper/SMTLIB2/Solver.h"
+#include "souper/Tool/CandidateMapUtils.h"
+#include "souper/Tool/GetSolver.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -24,10 +29,6 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
-#include "souper/Extractor/Candidates.h"
-#include "souper/SMTLIB2/Solver.h"
-#include "souper/Tool/CandidateMapUtils.h"
-#include "souper/Tool/GetSolver.h"
 #include <iostream>
 
 using namespace llvm;
@@ -35,38 +36,43 @@ using namespace souper;
 
 unsigned DebugLevel;
 
-static cl::opt<unsigned, /*ExternalStorage=*/true>
-DebugFlagParser("souper-debug-level",
-     cl::desc("Control the verbose level of debug output (default=1). "
-     "The larger the number is, the more fine-grained debug "
-     "information will be printed."),
-     cl::location(DebugLevel), cl::init(1));
+static cl::opt<unsigned, /*ExternalStorage=*/true> DebugFlagParser(
+    "souper-debug-level",
+    cl::desc("Control the verbose level of debug output (default=1). "
+             "The larger the number is, the more fine-grained debug "
+             "information will be printed."),
+    cl::location(DebugLevel), cl::init(1));
+
+static cl::opt<std::string> InputFilename(cl::Positional,
+                                          cl::desc("<input IR file>"),
+                                          cl::init("-"),
+                                          cl::value_desc("filename"));
+
+static cl::opt<std::string> OutputFilename("o",
+                                           cl::desc("Override output filename"),
+                                           cl::init(""),
+                                           cl::value_desc("filename"));
 
 static cl::opt<std::string>
-InputFilename(cl::Positional, cl::desc("<input IR file>"),
-    cl::init("-"), cl::value_desc("filename"));
+    FunctionName("f", cl::desc("Only process function with this name"),
+                 cl::init(""), cl::value_desc("function name"));
 
-static cl::opt<std::string>
-OutputFilename("o", cl::desc("Override output filename"),
-    cl::init(""), cl::value_desc("filename"));
-
-static cl::opt<bool> StaticProfile("souper-static-profile", cl::init(false),
+static cl::opt<bool> StaticProfile(
+    "souper-static-profile", cl::init(false),
     cl::desc("Static profiling of Souper optimizations (default=false)"));
 
-static cl::opt<bool>
-Check("check", cl::desc("Check input for expected results"),
-    cl::init(false));
+static cl::opt<bool> Check("check",
+                           cl::desc("Check input for expected results"),
+                           cl::init(false));
 
-static cl::opt<bool>
-Cost("cost", cl::desc("Print the cost"),
-     cl::init(false));
+static cl::opt<bool> Cost("cost", cl::desc("Print the cost"), cl::init(false));
 
 static ExitOnError ExitOnErr;
 
 // adapted from llvm-dis.cpp
 std::unique_ptr<llvm::Module> openInputFile(llvm::LLVMContext &Context) {
-  auto MB =
-    ExitOnErr(errorOrToExpected(llvm::MemoryBuffer::getFileOrSTDIN(InputFilename)));
+  auto MB = ExitOnErr(
+      errorOrToExpected(llvm::MemoryBuffer::getFileOrSTDIN(InputFilename)));
   llvm::SMDiagnostic Diag;
   auto M = parseIR(*MB, Diag, Context);
   if (!M) {
@@ -84,7 +90,7 @@ int main(int argc, char **argv) {
   // Enable debug stream buffering.
   EnableDebugBuffering = true;
 
-  llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
+  llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
   LLVMContext Context;
 
   cl::ParseCommandLineOptions(argc, argv, "LLVM superoptimizer\n");
@@ -112,7 +118,7 @@ int main(int argc, char **argv) {
   InstContext IC;
   ExprBuilderContext EBC;
   CandidateMap CandMap;
-  AddModuleToCandidateMap(IC, EBC, CandMap, *M.get());
+  AddModuleToCandidateMap(IC, EBC, CandMap, *M.get(), FunctionName);
 
   if (Check) {
     return CheckCandidateMap(*M.get(), CandMap, S.get(), IC) ? 0 : 1;
@@ -120,6 +126,8 @@ int main(int argc, char **argv) {
     if (StaticProfile && !KV)
       KV = new KVStore;
     return SolveCandidateMap(llvm::outs(), CandMap, S.get(), IC,
-                             StaticProfile ? KV : 0) ? 0 : 1;
+                             StaticProfile ? KV : 0)
+               ? 0
+               : 1;
   }
 }

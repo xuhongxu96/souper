@@ -1,0 +1,15 @@
+; Static profile 1
+; Function: /home/hongxu/data/repo/llvm-opt-benchmark/bench/openssl/optimized/e_ossltest.ll:ossltest_aes128_cbc_hmac_sha1_cipher
+%0:i64 = var
+%1:i64 = and 15:i64, %0
+%2:i1 = eq 0:i64, %1
+pc %2 1:i1
+%3:i64 = var
+%4:i1 = eq 18446744073709551615:i64, %3
+pc %4 0:i1
+%5:i64 = add 36:i64, %3
+%6:i64 = and 18446744073709551600:i64, %5
+%7:i1 = eq %0, %6
+pc %7 1:i1
+%8:i1 = eq %3, %0
+cand %8 0:i1
